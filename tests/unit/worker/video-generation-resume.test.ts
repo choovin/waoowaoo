@@ -60,6 +60,10 @@ function buildJob(): Job<TaskJobData> {
 describe('worker utils video generation resume', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    prismaMock.task.findUnique.mockReset()
+    asyncPollMock.pollAsyncTask.mockReset()
+    generatorApiMock.generateImage.mockReset()
+    generatorApiMock.generateVideo.mockReset()
   })
 
   it('continues polling from existing externalId without re-submitting generation', async () => {
@@ -113,5 +117,30 @@ describe('worker utils video generation resume', () => {
     expect(prismaMock.task.findUnique).not.toHaveBeenCalled()
     expect(asyncPollMock.pollAsyncTask).not.toHaveBeenCalled()
     expect(generatorApiMock.generateImage).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns download headers from resumed image polling path', async () => {
+    const externalId = 'OCOMPAT:IMAGE:b64_b2EtMQ:bW9kZWwtdGVzdA:task_2'
+    prismaMock.task.findUnique.mockResolvedValueOnce({ externalId })
+    asyncPollMock.pollAsyncTask.mockResolvedValueOnce({
+      status: 'completed',
+      resultUrl: 'https://oa.test/v1/images/task_2/content',
+      downloadHeaders: {
+        Authorization: 'Bearer image-key',
+      },
+    })
+
+    const result = await resolveImageSourceFromGeneration(buildJob(), {
+      userId: 'user-1',
+      modelId: 'openai-compatible:oa-1::gpt-image-1',
+      prompt: 'describe frame',
+      options: {
+        referenceImages: ['data:image/png;base64,QQ=='],
+      },
+    })
+
+    expect(result).toBe('https://oa.test/v1/images/task_2/content')
+    expect(asyncPollMock.pollAsyncTask).toHaveBeenCalledWith(externalId, 'user-1')
+    expect(generatorApiMock.generateImage).not.toHaveBeenCalled()
   })
 })

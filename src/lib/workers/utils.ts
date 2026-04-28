@@ -49,6 +49,37 @@ function scopedWorkerUtilLogger(job: Job<TaskJobData>, action: string) {
   })
 }
 
+function sanitizeForModelInvocationLog(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForModelInvocationLog(item))
+  }
+  if (!value || typeof value !== 'object') {
+    return value
+  }
+  const redactedKeyPattern = /(token|secret|password|apikey|api_key|authorization|auth)/i
+  const input = value as Record<string, unknown>
+  const output: Record<string, unknown> = {}
+  for (const [key, item] of Object.entries(input)) {
+    if (redactedKeyPattern.test(key)) {
+      output[key] = '[REDACTED]'
+      continue
+    }
+    output[key] = sanitizeForModelInvocationLog(item)
+  }
+  return output
+}
+
+function summarizeMediaValueForLog(value: string): Record<string, unknown> {
+  const trimmed = value.trim()
+  const isDataUrl = trimmed.startsWith('data:')
+  const preview = trimmed.slice(0, 120)
+  return {
+    isDataUrl,
+    length: trimmed.length,
+    preview,
+  }
+}
+
 export function parseJsonArray(value: unknown): string[] {
   if (!value) return []
   if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string')
@@ -223,6 +254,24 @@ export async function resolveImageSourceFromGeneration(
     runtimeSelections,
   })
 
+  const finalGenerationOptions = {
+    ...params.options,
+    ...capabilityOptions,
+  }
+
+  logger.info({
+    audit: true,
+    message: 'panel image model invocation params',
+    details: sanitizeForModelInvocationLog({
+      modelId: params.modelId,
+      prompt: params.prompt,
+      requestOptions: finalGenerationOptions,
+      rawOptions: params.options || {},
+      capabilityOptions,
+      referenceImages: params.options?.referenceImages || [],
+    }),
+  })
+
   logger.info({
     message: 'image source generation calling generateImage',
     details: {
@@ -236,8 +285,7 @@ export async function resolveImageSourceFromGeneration(
   const result = await withLogContext(
     { projectId: job.data.projectId, taskId: job.data.taskId, userId: params.userId },
     () => generateImage(params.userId, params.modelId, params.prompt, {
-      ...params.options,
-      ...capabilityOptions,
+      ...finalGenerationOptions,
     }),
   )
   if (!result.success) {
@@ -491,11 +539,29 @@ export async function resolveVideoSourceFromGeneration(
     providerRequestOptions[key] = value
   }
 
+  const finalVideoOptions = {
+    ...providerRequestOptions,
+    ...providerCapabilityOptions,
+  }
+
+  logger.info({
+    audit: true,
+    message: 'panel video model invocation params',
+    details: sanitizeForModelInvocationLog({
+      modelId: params.modelId,
+      imageUrl: summarizeMediaValueForLog(params.imageUrl),
+      requestOptions: finalVideoOptions,
+      rawOptions: params.options || {},
+      capabilityOptions,
+      providerRequestOptions,
+      runtimeSelections,
+    }),
+  })
+
   const result = await withLogContext(
     { projectId: job.data.projectId, taskId: job.data.taskId, userId: params.userId },
     () => generateVideo(params.userId, params.modelId, params.imageUrl, {
-      ...providerRequestOptions,
-      ...providerCapabilityOptions,
+      ...finalVideoOptions,
     }),
   )
   if (!result.success) {

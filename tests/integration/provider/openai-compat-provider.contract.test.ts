@@ -204,4 +204,62 @@ describe('provider contract - openai compatible media template', () => {
       }),
     ).rejects.toThrow('OPENAI_COMPAT_VIDEO_TEMPLATE_TASK_ID_NOT_FOUND')
   })
+
+  it('uses modelKey fallback when modelId is empty', async () => {
+    server!.defineScenario({
+      method: 'POST',
+      path: '/compat/v1/video/create',
+      mode: 'success',
+      submitResponse: {
+        status: 200,
+        body: { status: 'queued', task_id: 'task_local_fallback' },
+      },
+    })
+
+    const result = await generateVideoViaOpenAICompatTemplate({
+      userId: 'user-local',
+      providerId: 'openai-compatible:provider-local',
+      modelId: '',
+      modelKey: 'openai-compatible:provider-local::veo-local',
+      imageUrl: 'data:image/png;base64,AAAA',
+      prompt: 'animate this frame',
+      options: {
+        duration: 5,
+      },
+      profile: 'openai-compatible',
+      template: {
+        version: 1,
+        mediaType: 'video',
+        mode: 'async',
+        create: {
+          method: 'POST',
+          path: '/video/create',
+          bodyTemplate: {
+            model: '{{model}}',
+            prompt: '{{prompt}}',
+            image: '{{image}}',
+            duration: '{{duration}}',
+          },
+        },
+        status: { method: 'GET', path: '/video/status/{{task_id}}' },
+        response: {
+          taskIdPath: '$.task_id',
+          statusPath: '$.status',
+        },
+        polling: {
+          intervalMs: 1000,
+          timeoutMs: 30_000,
+          doneStates: ['done'],
+          failStates: ['failed'],
+        },
+      },
+    })
+
+    expect(result).toMatchObject({
+      success: true,
+      async: true,
+      requestId: 'task_local_fallback',
+      externalId: `OCOMPAT:VIDEO:b64_${encode('openai-compatible:provider-local')}:${encode('veo-local')}:task_local_fallback`,
+    })
+  })
 })

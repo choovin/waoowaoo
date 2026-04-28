@@ -143,6 +143,7 @@ function buildDefaultOpenAICompatImageAsyncTemplate(): OpenAICompatMediaTemplate
       bodyTemplate: {
         model: '{{model}}',
         prompt: '{{prompt}}',
+        image: '{{image}}',
       },
     },
     status: {
@@ -165,6 +166,60 @@ function buildDefaultOpenAICompatImageAsyncTemplate(): OpenAICompatMediaTemplate
   }
 }
 
+function shouldNormalizeRunnodeImageTemplate(
+  model: Pick<CustomModel, 'type' | 'modelId'>,
+  template: OpenAICompatMediaTemplate,
+): boolean {
+  if (
+    model.type !== 'image'
+    || !model.modelId.startsWith(RUNNODE_VIDEO_MODEL_ID_PREFIX)
+    || template.mediaType !== 'image'
+    || template.mode !== 'async'
+  ) {
+    return false
+  }
+
+  const body = template.create.bodyTemplate
+  const bodyRecord = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as Record<string, TemplateBodyValue>)
+    : null
+  const hasImage = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'image')
+  const hasInputReference = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'input_reference')
+
+  return (
+    template.create.contentType === 'multipart/form-data'
+    || !hasImage
+    || hasInputReference
+  )
+}
+
+function normalizeRunnodeImageTemplate(
+  model: Pick<CustomModel, 'type' | 'modelId'>,
+  template: OpenAICompatMediaTemplate,
+): OpenAICompatMediaTemplate {
+  if (!shouldNormalizeRunnodeImageTemplate(model, template)) return template
+
+  const body = template.create.bodyTemplate
+  const bodyRecord = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as Record<string, TemplateBodyValue>)
+    : {}
+  const legacyInputReference = bodyRecord.input_reference
+
+  return {
+    ...template,
+    create: {
+      ...template.create,
+      contentType: 'application/json',
+      multipartFileFields: undefined,
+      bodyTemplate: {
+        model: '{{model}}',
+        prompt: '{{prompt}}',
+        image: bodyRecord.image ?? legacyInputReference ?? '{{image}}',
+      },
+    },
+  }
+}
+
 function shouldNormalizeRunnodeVideoTemplate(
   model: Pick<CustomModel, 'type' | 'modelId'>,
   template: OpenAICompatMediaTemplate,
@@ -183,6 +238,10 @@ function shouldNormalizeRunnodeVideoTemplate(
     ? (body as Record<string, TemplateBodyValue>)
     : null
 
+  const hasLegacySeconds = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'seconds')
+  const hasLegacySize = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'size')
+  const hasDurationField = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'duration')
+  const hasResolutionField = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'resolution')
   const hasImage = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'image')
   const hasInputReference = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'input_reference')
   const hasNumericDoneState = !!template.polling?.doneStates?.some((item) => item === '2')
@@ -191,6 +250,10 @@ function shouldNormalizeRunnodeVideoTemplate(
 
   return (
     template.create.contentType === 'multipart/form-data'
+    || hasLegacySeconds
+    || hasLegacySize
+    || !hasDurationField
+    || !hasResolutionField
     || (!hasImage && hasInputReference)
     || !hasExpectedStatusPath
     || !hasNumericDoneState
@@ -208,7 +271,7 @@ function normalizeRunnodeVideoTemplate(
   const bodyRecord = body && typeof body === 'object' && !Array.isArray(body)
     ? (body as Record<string, TemplateBodyValue>)
     : {}
-  const { input_reference: legacyInputReference, ...restBody } = bodyRecord
+  const legacyInputReference = bodyRecord.input_reference
   const doneStates = Array.from(new Set([...(template.polling?.doneStates || []), '2']))
   const failStates = Array.from(new Set([...(template.polling?.failStates || []), '4']))
   const intervalMs = template.polling?.intervalMs ?? 3000
@@ -221,8 +284,12 @@ function normalizeRunnodeVideoTemplate(
       contentType: 'application/json',
       multipartFileFields: undefined,
       bodyTemplate: {
-        ...restBody,
-        image: restBody.image ?? legacyInputReference ?? '{{image}}',
+        // Runnode 视频模板统一参数：字段名固定为 duration/resolution/image/model/prompt
+        model: '{{model}}',
+        prompt: '{{prompt}}',
+        duration: '{{duration}}',
+        resolution: '{{resolution}}',
+        image: bodyRecord.image ?? legacyInputReference ?? '{{image}}',
       },
     },
     response: {
@@ -362,6 +429,13 @@ function normalizeStoredModel(raw: unknown, index: number): CustomModel {
     if (isOpenAICompatImageModel && isLegacyOpenAICompatImageSyncTemplate(compatMediaTemplate)) {
       compatMediaTemplate = buildDefaultOpenAICompatImageAsyncTemplate()
     }
+    compatMediaTemplate = normalizeRunnodeImageTemplate(
+      {
+        type: raw.type,
+        modelId,
+      },
+      compatMediaTemplate,
+    )
     compatMediaTemplate = normalizeRunnodeVideoTemplate(
       {
         type: raw.type,
