@@ -39,6 +39,7 @@ import {
 import type {
   OpenAICompatMediaTemplate,
   OpenAICompatMediaTemplateSource,
+  TemplateBodyValue,
 } from '@/lib/openai-compat-media-template'
 import { validateOpenAICompatMediaTemplate } from '@/lib/user-api/model-template/validator'
 
@@ -177,6 +178,77 @@ const DEFAULT_FIELD_TO_PRICING_API_TYPE: Readonly<Record<DefaultModelField, 'tex
   voiceDesignModel: 'voice',
 }
 const DEFAULT_LIPSYNC_MODEL_KEY = composeModelKey('fal', 'fal-ai/kling-video/lipsync/audio-to-video')
+const RUNNODE_VIDEO_MODEL_ID_PREFIX = 'runnode/'
+
+function shouldNormalizeRunnodeVideoTemplate(model: Pick<StoredModel, 'type' | 'modelId'>, template: OpenAICompatMediaTemplate): boolean {
+  if (
+    model.type !== 'video'
+    || !model.modelId.startsWith(RUNNODE_VIDEO_MODEL_ID_PREFIX)
+    || template.mediaType !== 'video'
+    || template.mode !== 'async'
+  ) {
+    return false
+  }
+
+  const body = template.create.bodyTemplate
+  const bodyRecord = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as Record<string, TemplateBodyValue>)
+    : null
+
+  const hasImage = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'image')
+  const hasInputReference = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'input_reference')
+  const hasNumericDoneState = !!template.polling?.doneStates?.some((item) => item === '2')
+  const hasNumericFailState = !!template.polling?.failStates?.some((item) => item === '4')
+  const hasExpectedStatusPath = template.response?.statusPath === '$.data.status'
+
+  return (
+    template.create.contentType === 'multipart/form-data'
+    || (!hasImage && hasInputReference)
+    || !hasExpectedStatusPath
+    || !hasNumericDoneState
+    || !hasNumericFailState
+  )
+}
+
+function normalizeRunnodeVideoTemplate(model: Pick<StoredModel, 'type' | 'modelId'>, template: OpenAICompatMediaTemplate): OpenAICompatMediaTemplate {
+  if (!shouldNormalizeRunnodeVideoTemplate(model, template)) return template
+
+  const body = template.create.bodyTemplate
+  const bodyRecord = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as Record<string, TemplateBodyValue>)
+    : {}
+  const { input_reference: legacyInputReference, ...restBody } = bodyRecord
+  const doneStates = Array.from(new Set([...(template.polling?.doneStates || []), '2']))
+  const failStates = Array.from(new Set([...(template.polling?.failStates || []), '4']))
+  const intervalMs = template.polling?.intervalMs ?? 3000
+  const timeoutMs = template.polling?.timeoutMs ?? 300000
+
+  return {
+    ...template,
+    create: {
+      ...template.create,
+      contentType: 'application/json',
+      multipartFileFields: undefined,
+      bodyTemplate: {
+        ...restBody,
+        image: restBody.image ?? legacyInputReference ?? '{{image}}',
+      },
+    },
+    response: {
+      ...template.response,
+      statusPath: '$.data.status',
+      outputUrlPath: undefined,
+      outputUrlsPath: '$.data.result_data',
+      errorPath: template.response?.errorPath || '$.data.error_message',
+    },
+    polling: {
+      intervalMs,
+      timeoutMs,
+      doneStates,
+      failStates,
+    },
+  }
+}
 
 /**
  * Provider keys that share pricing/capability catalogs with a canonical provider.
@@ -980,7 +1052,7 @@ function getDefaultMediaTemplate(type: 'image' | 'video'): OpenAICompatMediaTemp
     return {
       version: 1,
       mediaType: 'image',
-      mode: 'sync',
+      mode: 'async',
       create: {
         method: 'POST',
         path: '/images/generations',
@@ -990,10 +1062,22 @@ function getDefaultMediaTemplate(type: 'image' | 'video'): OpenAICompatMediaTemp
           prompt: '{{prompt}}',
         },
       },
+      status: {
+        method: 'GET',
+        path: '/images/generations/{{task_id}}',
+      },
       response: {
+        taskIdPath: '$.id',
+        statusPath: '$.status',
         outputUrlPath: '$.data[0].url',
         outputUrlsPath: '$.data',
         errorPath: '$.error.message',
+      },
+      polling: {
+        intervalMs: 3000,
+        timeoutMs: 300000,
+        doneStates: ['completed', 'succeeded'],
+        failStates: ['failed', 'error', 'cancelled', 'canceled'],
       },
     }
   }
@@ -1005,14 +1089,13 @@ function getDefaultMediaTemplate(type: 'image' | 'video'): OpenAICompatMediaTemp
     create: {
       method: 'POST',
       path: '/videos',
-      contentType: 'multipart/form-data',
-      multipartFileFields: ['input_reference'],
+      contentType: 'application/json',
       bodyTemplate: {
         model: '{{model}}',
         prompt: '{{prompt}}',
         seconds: '{{duration}}',
         size: '{{size}}',
-        input_reference: '{{image}}',
+        image: '{{image}}',
       },
     },
     status: {
@@ -1115,8 +1198,10 @@ function resolveStoredMediaTemplates(
           field: `models[${index}].compatMediaTemplate.mediaType`,
         })
       }
+      const normalizedTemplate = normalizeRunnodeVideoTemplate(model, model.compatMediaTemplate)
       return {
         ...model,
+        compatMediaTemplate: normalizedTemplate,
         compatMediaTemplateCheckedAt: model.compatMediaTemplateCheckedAt || checkedAtFallback,
         compatMediaTemplateSource: model.compatMediaTemplateSource || 'ai',
       }
@@ -1124,9 +1209,26 @@ function resolveStoredMediaTemplates(
 
     const existing = existingByModelKey.get(model.modelKey)
     if (existing?.compatMediaTemplate) {
+      const t = existing.compatMediaTemplate
+      const isLegacySyncDefault = (
+        expectedMediaType === 'image'
+        && t.mode === 'sync'
+        && !t.status
+        && t.create?.path === '/images/generations'
+        && t.response?.outputUrlPath === '$.data[0].url'
+      )
+      if (isLegacySyncDefault) {
+        return {
+          ...model,
+          compatMediaTemplate: getDefaultMediaTemplate(expectedMediaType),
+          compatMediaTemplateCheckedAt: checkedAtFallback,
+          compatMediaTemplateSource: 'manual',
+        }
+      }
+      const normalizedTemplate = normalizeRunnodeVideoTemplate(model, existing.compatMediaTemplate)
       return {
         ...model,
-        compatMediaTemplate: existing.compatMediaTemplate,
+        compatMediaTemplate: normalizedTemplate,
         compatMediaTemplateCheckedAt: existing.compatMediaTemplateCheckedAt || checkedAtFallback,
         compatMediaTemplateSource: existing.compatMediaTemplateSource || 'manual',
       }
