@@ -38,6 +38,7 @@ export interface CustomModel {
 }
 
 const RUNNODE_VIDEO_MODEL_ID_PREFIX = 'runnode/'
+const RUNNODE_GPT_IMAGE_2_MODEL_IDS = new Set(['gpt-image-2', 'runnode/gpt-image-2'])
 
 export type ModelMediaType = 'llm' | 'image' | 'video' | 'audio' | 'lipsync'
 
@@ -132,6 +133,10 @@ function isLegacyOpenAICompatImageSyncTemplate(template: OpenAICompatMediaTempla
   )
 }
 
+function isRunnodeGptImage2ModelId(modelId: string): boolean {
+  return RUNNODE_GPT_IMAGE_2_MODEL_IDS.has(modelId.trim().toLowerCase())
+}
+
 function buildDefaultOpenAICompatImageAsyncTemplate(): OpenAICompatMediaTemplate {
   return {
     version: 1,
@@ -167,13 +172,46 @@ function buildDefaultOpenAICompatImageAsyncTemplate(): OpenAICompatMediaTemplate
   }
 }
 
+function buildDefaultOpenAICompatImageSyncTemplate(): OpenAICompatMediaTemplate {
+  return {
+    version: 1,
+    mediaType: 'image',
+    mode: 'sync',
+    create: {
+      method: 'POST',
+      path: '/images/generations',
+      contentType: 'application/json',
+      bodyTemplate: {
+        model: '{{model}}',
+        prompt: '{{prompt}}',
+        image: '{{images}}',
+        size: '{{size}}',
+      },
+    },
+    response: {
+      outputUrlPath: '$.data[0].url',
+      outputUrlsPath: '$.data',
+      errorPath: '$.error.message',
+    },
+  }
+}
+
+function buildDefaultOpenAICompatImageTemplate(modelId: string): OpenAICompatMediaTemplate {
+  return isRunnodeGptImage2ModelId(modelId)
+    ? buildDefaultOpenAICompatImageSyncTemplate()
+    : buildDefaultOpenAICompatImageAsyncTemplate()
+}
+
 function shouldNormalizeRunnodeImageTemplate(
   model: Pick<CustomModel, 'type' | 'modelId'>,
   template: OpenAICompatMediaTemplate,
 ): boolean {
+  const normalizedModelId = model.modelId.trim().toLowerCase()
+  const isRunnodeImageModel = model.modelId.startsWith(RUNNODE_VIDEO_MODEL_ID_PREFIX)
+    || RUNNODE_GPT_IMAGE_2_MODEL_IDS.has(normalizedModelId)
   if (
     model.type !== 'image'
-    || !model.modelId.startsWith(RUNNODE_VIDEO_MODEL_ID_PREFIX)
+    || !isRunnodeImageModel
     || template.mediaType !== 'image'
     || template.mode !== 'async'
   ) {
@@ -186,11 +224,13 @@ function shouldNormalizeRunnodeImageTemplate(
     : null
   const hasImage = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'image')
   const hasInputReference = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'input_reference')
+  const hasSize = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'size')
 
   return (
     template.create.contentType === 'multipart/form-data'
     || !hasImage
     || hasInputReference
+    || !hasSize
   )
 }
 
@@ -205,6 +245,8 @@ function normalizeRunnodeImageTemplate(
     ? (body as Record<string, TemplateBodyValue>)
     : {}
   const legacyInputReference = bodyRecord.input_reference
+  const normalizedModelId = model.modelId.trim().toLowerCase()
+  const expectsImageArray = RUNNODE_GPT_IMAGE_2_MODEL_IDS.has(normalizedModelId)
 
   return {
     ...template,
@@ -215,7 +257,8 @@ function normalizeRunnodeImageTemplate(
       bodyTemplate: {
         model: '{{model}}',
         prompt: '{{prompt}}',
-        image: bodyRecord.image ?? legacyInputReference ?? '{{image}}',
+        image: bodyRecord.image ?? legacyInputReference ?? (expectsImageArray ? '{{images}}' : '{{image}}'),
+        size: bodyRecord.size ?? '{{size}}',
       },
     },
   }
@@ -430,8 +473,12 @@ function normalizeStoredModel(raw: unknown, index: number): CustomModel {
     }
     compatMediaTemplate = validated.template
     const isOpenAICompatImageModel = raw.type === 'image' && getProviderKey(provider).toLowerCase() === 'openai-compatible'
-    if (isOpenAICompatImageModel && isLegacyOpenAICompatImageSyncTemplate(compatMediaTemplate)) {
-      compatMediaTemplate = buildDefaultOpenAICompatImageAsyncTemplate()
+    if (
+      isOpenAICompatImageModel
+      && isLegacyOpenAICompatImageSyncTemplate(compatMediaTemplate)
+      && !isRunnodeGptImage2ModelId(modelId)
+    ) {
+      compatMediaTemplate = buildDefaultOpenAICompatImageTemplate(modelId)
     }
     compatMediaTemplate = normalizeRunnodeImageTemplate(
       {

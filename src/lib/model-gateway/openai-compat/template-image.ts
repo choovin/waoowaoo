@@ -45,7 +45,9 @@ function summarizeJsonLike(value: unknown): unknown {
   const output: Record<string, unknown> = {}
   for (const [key, raw] of Object.entries(input)) {
     if (key === 'image' || key === 'image2' || key === 'img_url') {
-      output[key] = summarizePotentialMediaValue(raw)
+      output[key] = Array.isArray(raw)
+        ? raw.map((item) => summarizePotentialMediaValue(item))
+        : summarizePotentialMediaValue(raw)
       continue
     }
     if (key === 'images' && Array.isArray(raw)) {

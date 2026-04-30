@@ -179,6 +179,11 @@ const DEFAULT_FIELD_TO_PRICING_API_TYPE: Readonly<Record<DefaultModelField, 'tex
 }
 const DEFAULT_LIPSYNC_MODEL_KEY = composeModelKey('fal', 'fal-ai/kling-video/lipsync/audio-to-video')
 const RUNNODE_VIDEO_MODEL_ID_PREFIX = 'runnode/'
+const RUNNODE_GPT_IMAGE_2_MODEL_IDS = new Set(['gpt-image-2', 'runnode/gpt-image-2'])
+
+function isRunnodeGptImage2ModelId(modelId: string): boolean {
+  return RUNNODE_GPT_IMAGE_2_MODEL_IDS.has(modelId.trim().toLowerCase())
+}
 
 function shouldNormalizeRunnodeVideoTemplate(model: Pick<StoredModel, 'type' | 'modelId'>, template: OpenAICompatMediaTemplate): boolean {
   if (
@@ -1058,8 +1063,32 @@ function isOpenAICompatibleMediaTemplateModel(model: StoredModel): boolean {
   return model.type === 'image' || model.type === 'video'
 }
 
-function getDefaultMediaTemplate(type: 'image' | 'video'): OpenAICompatMediaTemplate {
+function getDefaultMediaTemplate(type: 'image' | 'video', modelId?: string): OpenAICompatMediaTemplate {
   if (type === 'image') {
+    if (isRunnodeGptImage2ModelId(modelId || '')) {
+      return {
+        version: 1,
+        mediaType: 'image',
+        mode: 'sync',
+        create: {
+          method: 'POST',
+          path: '/images/generations',
+          contentType: 'application/json',
+          bodyTemplate: {
+            model: '{{model}}',
+            prompt: '{{prompt}}',
+            image: '{{images}}',
+            size: '{{size}}',
+          },
+        },
+        response: {
+          outputUrlPath: '$.data[0].url',
+          outputUrlsPath: '$.data',
+          errorPath: '$.error.message',
+        },
+      }
+    }
+
     return {
       version: 1,
       mediaType: 'image',
@@ -1209,7 +1238,9 @@ function resolveStoredMediaTemplates(
           field: `models[${index}].compatMediaTemplate.mediaType`,
         })
       }
-      const normalizedTemplate = normalizeRunnodeVideoTemplate(model, model.compatMediaTemplate)
+      const normalizedTemplate = model.type === 'image'
+        ? normalizeRunnodeImageTemplate(model, model.compatMediaTemplate)
+        : normalizeRunnodeVideoTemplate(model, model.compatMediaTemplate)
       return {
         ...model,
         compatMediaTemplate: normalizedTemplate,
@@ -1231,12 +1262,14 @@ function resolveStoredMediaTemplates(
       if (isLegacySyncDefault) {
         return {
           ...model,
-          compatMediaTemplate: getDefaultMediaTemplate(expectedMediaType),
+          compatMediaTemplate: getDefaultMediaTemplate(expectedMediaType, model.modelId),
           compatMediaTemplateCheckedAt: checkedAtFallback,
           compatMediaTemplateSource: 'manual',
         }
       }
-      const normalizedTemplate = normalizeRunnodeVideoTemplate(model, existing.compatMediaTemplate)
+      const normalizedTemplate = model.type === 'image'
+        ? normalizeRunnodeImageTemplate(model, existing.compatMediaTemplate)
+        : normalizeRunnodeVideoTemplate(model, existing.compatMediaTemplate)
       return {
         ...model,
         compatMediaTemplate: normalizedTemplate,
@@ -1247,11 +1280,70 @@ function resolveStoredMediaTemplates(
 
     return {
       ...model,
-      compatMediaTemplate: getDefaultMediaTemplate(expectedMediaType),
+      compatMediaTemplate: getDefaultMediaTemplate(expectedMediaType, model.modelId),
       compatMediaTemplateCheckedAt: checkedAtFallback,
       compatMediaTemplateSource: 'manual',
     }
   })
+}
+
+function shouldNormalizeRunnodeImageTemplate(model: Pick<StoredModel, 'type' | 'modelId'>, template: OpenAICompatMediaTemplate): boolean {
+  const normalizedModelId = model.modelId.trim().toLowerCase()
+  const isRunnodeImageModel = model.modelId.startsWith(RUNNODE_VIDEO_MODEL_ID_PREFIX)
+    || RUNNODE_GPT_IMAGE_2_MODEL_IDS.has(normalizedModelId)
+  if (
+    model.type !== 'image'
+    || !isRunnodeImageModel
+    || template.mediaType !== 'image'
+    || template.mode !== 'async'
+  ) {
+    return false
+  }
+
+  const body = template.create.bodyTemplate
+  const bodyRecord = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as Record<string, TemplateBodyValue>)
+    : null
+  const hasImage = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'image')
+  const hasInputReference = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'input_reference')
+  const hasSize = !!bodyRecord && Object.prototype.hasOwnProperty.call(bodyRecord, 'size')
+
+  return (
+    template.create.contentType === 'multipart/form-data'
+    || !hasImage
+    || hasInputReference
+    || !hasSize
+  )
+}
+
+function normalizeRunnodeImageTemplate(
+  model: Pick<StoredModel, 'type' | 'modelId'>,
+  template: OpenAICompatMediaTemplate,
+): OpenAICompatMediaTemplate {
+  if (!shouldNormalizeRunnodeImageTemplate(model, template)) return template
+
+  const body = template.create.bodyTemplate
+  const bodyRecord = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as Record<string, TemplateBodyValue>)
+    : {}
+  const legacyInputReference = bodyRecord.input_reference
+  const normalizedModelId = model.modelId.trim().toLowerCase()
+  const expectsImageArray = RUNNODE_GPT_IMAGE_2_MODEL_IDS.has(normalizedModelId)
+
+  return {
+    ...template,
+    create: {
+      ...template.create,
+      contentType: 'application/json',
+      multipartFileFields: undefined,
+      bodyTemplate: {
+        model: '{{model}}',
+        prompt: '{{prompt}}',
+        image: bodyRecord.image ?? legacyInputReference ?? (expectsImageArray ? '{{images}}' : '{{image}}'),
+        size: bodyRecord.size ?? '{{size}}',
+      },
+    },
+  }
 }
 
 function validateCustomPricingCapabilityMappings(models: StoredModel[]) {

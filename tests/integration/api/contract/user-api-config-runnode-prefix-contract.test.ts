@@ -140,4 +140,81 @@ describe('api contract - user api-config PUT runnode/* video template', () => {
     const createConfig = (savedModel?.compatMediaTemplate as { create?: Record<string, unknown> } | undefined)?.create
     expect(createConfig).not.toHaveProperty('multipartFileFields')
   })
+
+  it('normalizes gpt-image-2 image multipart template to application/json and preserves size', async () => {
+    installAuthMocks()
+    mockAuthenticated('user-1')
+    const route = await import('@/app/api/user/api-config/route')
+
+    const modelKey = 'openai-compatible:oa-contract::gpt-image-2'
+    const req = buildMockRequest({
+      path: '/api/user/api-config',
+      method: 'PUT',
+      body: {
+        providers: [
+          { id: 'openai-compatible:oa-contract', name: 'OpenAI Compat', baseUrl: 'https://compat.test/v1', apiKey: 'oa-key' },
+        ],
+        models: [
+          {
+            modelId: 'gpt-image-2',
+            modelKey,
+            name: 'GPT Image 2',
+            type: 'image',
+            provider: 'openai-compatible:oa-contract',
+            compatMediaTemplate: {
+              version: 1,
+              mediaType: 'image',
+              mode: 'async',
+              create: {
+                method: 'POST',
+                path: '/images/generations',
+                contentType: 'multipart/form-data',
+                multipartFileFields: ['input_reference'],
+                bodyTemplate: {
+                  model: '{{model}}',
+                  prompt: '{{prompt}}',
+                  input_reference: '{{image}}',
+                },
+              },
+              status: {
+                method: 'GET',
+                path: '/images/tasks/{{task_id}}',
+              },
+              response: {
+                taskIdPath: '$.id',
+                statusPath: '$.status',
+              },
+              polling: {
+                intervalMs: 3000,
+                timeoutMs: 180000,
+                doneStates: ['completed'],
+                failStates: ['failed'],
+              },
+            },
+          },
+        ],
+      },
+    })
+
+    const res = await route.PUT(req, routeContext)
+    expect(res.status).toBe(200)
+    const savedModels = readSavedModelsFromUpsert()
+    const savedModel = savedModels.find((item) => item.modelKey === modelKey)
+    expect(savedModel?.compatMediaTemplate).toMatchObject({
+      mediaType: 'image',
+      mode: 'async',
+      create: {
+        path: '/images/generations',
+        contentType: 'application/json',
+        bodyTemplate: {
+          model: '{{model}}',
+          prompt: '{{prompt}}',
+          image: '{{image}}',
+          size: '{{size}}',
+        },
+      },
+    })
+    const createConfig = (savedModel?.compatMediaTemplate as { create?: Record<string, unknown> } | undefined)?.create
+    expect(createConfig).not.toHaveProperty('multipartFileFields')
+  })
 })

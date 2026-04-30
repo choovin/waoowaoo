@@ -104,6 +104,17 @@ export async function generateImage(
     // 调用生成（提取 referenceImages 单独传递，其余选项合并进 options）
     const { referenceImages, ...generatorOptions } = options || {}
     if (gatewayRoute === 'openai-compat') {
+        // OpenAI 兼容模式：将 aspectRatio 转换为 size（模板/非模板分支统一）
+        let openaiCompatOptions = { ...generatorOptions }
+        if (openaiCompatOptions.aspectRatio) {
+            const mappedSize = aspectRatioToOpenAISize(openaiCompatOptions.aspectRatio)
+            if (mappedSize && !openaiCompatOptions.size) {
+                openaiCompatOptions = { ...openaiCompatOptions, size: mappedSize }
+            }
+            // 移除不支持的 aspectRatio
+            delete openaiCompatOptions.aspectRatio
+        }
+
         const compatTemplate = selection.compatMediaTemplate
         if (providerKey === 'openai-compatible' && !compatTemplate) {
             throw new Error(`MODEL_COMPAT_MEDIA_TEMPLATE_REQUIRED: ${selection.modelKey}`)
@@ -117,7 +128,7 @@ export async function generateImage(
                 prompt,
                 referenceImages,
                 options: {
-                    ...generatorOptions,
+                    ...openaiCompatOptions,
                     provider: selection.provider,
                     modelId: selection.modelId,
                     modelKey: selection.modelKey,
@@ -125,17 +136,6 @@ export async function generateImage(
                 profile: 'openai-compatible',
                 template: compatTemplate,
             })
-        }
-
-        // OpenAI 兼容模式：将 aspectRatio 转换为 size
-        let openaiCompatOptions = { ...generatorOptions }
-        if (openaiCompatOptions.aspectRatio) {
-            const mappedSize = aspectRatioToOpenAISize(openaiCompatOptions.aspectRatio)
-            if (mappedSize && !openaiCompatOptions.size) {
-                openaiCompatOptions = { ...openaiCompatOptions, size: mappedSize }
-            }
-            // 移除不支持的 aspectRatio
-            delete openaiCompatOptions.aspectRatio
         }
 
         return await generateImageViaOpenAICompat({
