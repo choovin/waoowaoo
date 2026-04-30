@@ -1164,5 +1164,35 @@
                 "supportGenerateAudio": false
             }
         }
+    },
+    {
+        "modelType": "video",
+        "provider": "openai-compatible",
+        "modelId": "runnode/ltx-2.3-22b-dev-flf",
+        "capabilities": {
+            "video": {
+                "generationModeOptions": [
+                    "normal",
+                    "firstlastframe"
+                ],
+                "durationOptions": [
+                    5,
+                    10,
+                    15
+                ],
+                "resolutionOptions": [
+                    "720x1280",
+                    "1280x720",
+                    "1080x1920",
+                    "1920x1080",
+                    "480x848",
+                    "848x480",
+                    "1440x2560",
+                    "2560x1440"
+                ],
+                "firstlastframe": true,
+                "supportGenerateAudio": true
+            }
+        }
     }
 ]

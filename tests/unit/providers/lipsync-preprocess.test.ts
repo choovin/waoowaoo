@@ -8,6 +8,10 @@ const toFetchableUrlMock = vi.hoisted(() => vi.fn((input: string) => {
   if (input.startsWith('/')) return `https://public.example.com${input}`
   return input
 }))
+const transcodeAudioToWavMock = vi.hoisted(() => vi.fn(async (buffer: Buffer) => ({
+  buffer,
+  mimeType: 'audio/wav',
+})))
 
 vi.mock('@/lib/media/outbound-image', () => ({
   normalizeToOriginalMediaUrl: normalizeToOriginalMediaUrlMock,
@@ -20,6 +24,10 @@ vi.mock('@/lib/storage', () => ({
 
 vi.mock('@/lib/storage/utils', () => ({
   toFetchableUrl: toFetchableUrlMock,
+}))
+
+vi.mock('@/lib/lipsync/audio-transcode', () => ({
+  transcodeAudioToWav: transcodeAudioToWavMock,
 }))
 
 vi.mock('@/lib/logging/core', () => ({
@@ -194,6 +202,38 @@ describe('lipsync preprocess', () => {
     expect(result.trimmedAudio).toBe(false)
     expect(result.params.audioUrl).toBe('https://assets.example.com/audio.wav')
     expect(fetchMock).toHaveBeenCalled()
+    expect(uploadObjectMock).not.toHaveBeenCalled()
+  })
+
+  it('transcodes non-wav audio before preprocessing', async () => {
+    const fakeMp3 = Buffer.from('ID3\x03\x00\x00\x00\x00\x00\x21', 'binary')
+    const transcodedWav = buildWav(3000)
+    transcodeAudioToWavMock.mockResolvedValueOnce({
+      buffer: transcodedWav,
+      mimeType: 'audio/wav',
+    })
+    const video = buildMp4WithDuration(5000)
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('video.mp4')) return buildBinaryResponse(video, 'video/mp4')
+      if (url.includes('audio.mp3')) return buildBinaryResponse(fakeMp3, 'audio/mpeg')
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
+
+    const result = await preprocessLipSyncParams(
+      {
+        videoUrl: 'https://assets.example.com/video.mp4',
+        audioUrl: 'https://assets.example.com/audio.mp3',
+      },
+      { providerKey: 'bailian' },
+    )
+
+    expect(result.paddedAudio).toBe(false)
+    expect(result.trimmedAudio).toBe(false)
+    expect(result.params.audioUrl).toBe('https://assets.example.com/audio.mp3')
+    expect(result.params.videoDurationMs).toBe(5000)
+    expect(transcodeAudioToWavMock).toHaveBeenCalledTimes(1)
     expect(uploadObjectMock).not.toHaveBeenCalled()
   })
 })

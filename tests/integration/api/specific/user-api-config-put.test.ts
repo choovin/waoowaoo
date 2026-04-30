@@ -1365,5 +1365,71 @@ describe('api specific - user api-config PUT provider uniqueness', () => {
     })
     const createConfig = (savedModel?.compatMediaTemplate as { create?: Record<string, unknown> } | undefined)?.create
     expect(createConfig).not.toHaveProperty('multipartFileFields')
+    const bodyTemplate = (createConfig?.bodyTemplate ?? {}) as Record<string, unknown>
+    expect(bodyTemplate).not.toHaveProperty('image2')
+  })
+
+  it('adds image2 to normalized runnode ltx flf video body when catalog declares firstlastframe', async () => {
+    installAuthMocks()
+    mockAuthenticated('user-1')
+    const route = await import('@/app/api/user/api-config/route')
+
+    const req = buildMockRequest({
+      path: '/api/user/api-config',
+      method: 'PUT',
+      body: {
+        providers: [
+          { id: 'openai-compatible:oa-1', name: 'OpenAI Compat', baseUrl: 'https://compat.test/v1', apiKey: 'oa-key' },
+        ],
+        models: [
+          {
+            modelId: 'runnode/ltx-2.3-22b-dev-flf',
+            modelKey: 'openai-compatible:oa-1::runnode/ltx-2.3-22b-dev-flf',
+            name: 'RunNode LTX 2.3 flf',
+            type: 'video',
+            provider: 'openai-compatible:oa-1',
+            compatMediaTemplate: {
+              version: 1,
+              mediaType: 'video',
+              mode: 'async',
+              create: {
+                method: 'POST',
+                path: '/videos',
+                contentType: 'multipart/form-data',
+                multipartFileFields: ['input_reference'],
+                bodyTemplate: {
+                  model: '{{model}}',
+                  prompt: '{{prompt}}',
+                  input_reference: '{{image}}',
+                },
+              },
+              status: {
+                method: 'GET',
+                path: '/videos/{{task_id}}',
+              },
+              response: {
+                taskIdPath: '$.id',
+                statusPath: '$.status',
+              },
+              polling: {
+                intervalMs: 3000,
+                timeoutMs: 180000,
+                doneStates: ['completed'],
+                failStates: ['failed'],
+              },
+            },
+          },
+        ],
+      },
+    })
+
+    const res = await route.PUT(req, routeContext)
+    expect(res.status).toBe(200)
+    const savedModels = readSavedModelsFromUpsert()
+    const savedModel = savedModels.find((item) => item.modelKey === 'openai-compatible:oa-1::runnode/ltx-2.3-22b-dev-flf')
+    const createConfig = (savedModel?.compatMediaTemplate as { create?: Record<string, unknown> } | undefined)?.create
+    const bodyTemplate = (createConfig?.bodyTemplate ?? {}) as Record<string, unknown>
+    expect(bodyTemplate.image).toBe('{{image}}')
+    expect(bodyTemplate.image2).toBe('{{image2}}')
   })
 })

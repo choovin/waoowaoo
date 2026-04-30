@@ -21,6 +21,9 @@ const prismaMock = vi.hoisted(() => ({
       videoRatio: '9:16',
       artStyle: 'realistic',
       ttsRate: '+0%',
+      capabilityDefaults: JSON.stringify({
+        'video::model': { duration: 15, resolution: '720p' },
+      }),
     })),
   },
   project: {
@@ -70,8 +73,47 @@ describe('api specific - project create default audio model', () => {
       data: expect.objectContaining({
         projectId: 'project-1',
         audioModel: 'audio::tts',
+        capabilityOverrides: JSON.stringify({
+          'video::model': { duration: 15, resolution: '720p' },
+        }),
       }),
     })
+  })
+
+  it('does not set capabilityOverrides when user capabilityDefaults is empty', async () => {
+    prismaMock.userPreference.findUnique.mockResolvedValueOnce({
+      analysisModel: 'llm::analysis',
+      characterModel: 'img::character',
+      locationModel: 'img::location',
+      storyboardModel: 'img::storyboard',
+      editModel: 'img::edit',
+      videoModel: 'video::model',
+      audioModel: 'audio::tts',
+      videoRatio: '9:16',
+      artStyle: 'realistic',
+      ttsRate: '+0%',
+      // Empty stored value: parseCapabilitySelections treats '' like null/undefined.
+      capabilityDefaults: '',
+    })
+    const mod = await import('@/app/api/projects/route')
+    const req = buildMockRequest({
+      path: '/api/projects',
+      method: 'POST',
+      body: {
+        name: 'Test Project',
+        description: '',
+      },
+    })
+
+    const res = await mod.POST(req, routeContext)
+    expect(res.status).toBe(201)
+    expect(prismaMock.novelPromotionProject.create).toHaveBeenCalled()
+    const calls = prismaMock.novelPromotionProject.create.mock.calls as unknown as Array<
+      [{ data: Record<string, unknown> }]
+    >
+    const createArg = calls[0]![0]
+    expect(createArg.data).toBeDefined()
+    expect(Object.prototype.hasOwnProperty.call(createArg.data, 'capabilityOverrides')).toBe(false)
   })
 
   it('returns an explicit validation error when description exceeds the max length', async () => {

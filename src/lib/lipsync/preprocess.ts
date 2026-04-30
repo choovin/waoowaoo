@@ -3,6 +3,7 @@ import { logInfo as _ulogInfo } from '@/lib/logging/core'
 import { normalizeToOriginalMediaUrl } from '@/lib/media/outbound-image'
 import { toFetchableUrl } from '@/lib/storage/utils'
 import type { LipSyncParams } from '@/lib/lipsync/types'
+import { transcodeAudioToWav } from '@/lib/lipsync/audio-transcode'
 
 const LIPSYNC_MIN_AUDIO_DURATION_MS = 2000
 
@@ -347,12 +348,26 @@ export async function preprocessLipSyncParams(
     }
   }
 
-  const audioBinary = await loadBinaryFromInput(params.audioUrl)
-  if (!audioBinary.mimeType.includes('wav') && parseWavInfo(audioBinary.buffer) === null) {
-    throw new Error('LIPSYNC_AUDIO_PREPROCESS_WAV_REQUIRED')
+  let audioBinary = await loadBinaryFromInput(params.audioUrl)
+  let wavInfo = parseWavInfo(audioBinary.buffer)
+  const isWavInput = audioBinary.mimeType.includes('wav') || wavInfo !== null
+  if (!isWavInput) {
+    audioBinary = await transcodeAudioToWav(audioBinary.buffer, audioBinary.mimeType)
+    wavInfo = parseWavInfo(audioBinary.buffer)
+    if (wavInfo === null) {
+      // ffmpeg pipe output may produce stream-oriented wav headers that are harder to parse.
+      // Retry once with temp-file output to enforce a fully materialized wav container.
+      audioBinary = await transcodeAudioToWav(audioBinary.buffer, audioBinary.mimeType, { forceTempFile: true })
+      wavInfo = parseWavInfo(audioBinary.buffer)
+      if (wavInfo === null) {
+        throw new Error('LIPSYNC_AUDIO_PREPROCESS_WAV_REQUIRED')
+      }
+    }
   }
 
-  const parsedAudioDuration = getWavDurationMs(audioBinary.buffer)
+  const parsedAudioDuration = wavInfo
+    ? Math.round((wavInfo.dataSize / wavInfo.byteRate) * 1000)
+    : null
   if (audioDurationMs === null) {
     if (parsedAudioDuration === null) {
       throw new Error('LIPSYNC_AUDIO_DURATION_PARSE_FAILED')

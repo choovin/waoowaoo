@@ -97,6 +97,16 @@ function parseCapabilitySelections(raw: string | null | undefined): CapabilitySe
   }
 }
 
+/**
+ * 新建小说推广项目时，将用户偏好里的 capabilityDefaults 做一次快照写入项目的 capabilityOverrides。
+ * 之后用户在设置中心修改默认值不会影响已创建的项目。
+ */
+export function snapshotCapabilitySelectionsForNewProject(raw: string | null | undefined): string | null {
+  const selections = parseCapabilitySelections(raw)
+  if (Object.keys(selections).length === 0) return null
+  return JSON.stringify(selections)
+}
+
 export interface ProjectModelConfig {
   analysisModel: string | null
   characterModel: string | null

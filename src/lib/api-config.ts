@@ -20,6 +20,7 @@ import type {
   TemplateBodyValue,
 } from './openai-compat-media-template'
 import { validateOpenAICompatMediaTemplate } from './user-api/model-template/validator'
+import { findBuiltinCapabilities } from '@/lib/model-capabilities/catalog'
 
 export interface CustomModel {
   modelId: string
@@ -262,7 +263,7 @@ function shouldNormalizeRunnodeVideoTemplate(
 }
 
 function normalizeRunnodeVideoTemplate(
-  model: Pick<CustomModel, 'type' | 'modelId'>,
+  model: Pick<CustomModel, 'type' | 'modelId' | 'provider'>,
   template: OpenAICompatMediaTemplate,
 ): OpenAICompatMediaTemplate {
   if (!shouldNormalizeRunnodeVideoTemplate(model, template)) return template
@@ -276,6 +277,8 @@ function normalizeRunnodeVideoTemplate(
   const failStates = Array.from(new Set([...(template.polling?.failStates || []), '4']))
   const intervalMs = template.polling?.intervalMs ?? 3000
   const timeoutMs = template.polling?.timeoutMs ?? 300000
+  const supportsFirstLastFrame =
+    findBuiltinCapabilities('video', model.provider, model.modelId)?.video?.firstlastframe === true
 
   return {
     ...template,
@@ -284,12 +287,13 @@ function normalizeRunnodeVideoTemplate(
       contentType: 'application/json',
       multipartFileFields: undefined,
       bodyTemplate: {
-        // Runnode 视频模板统一参数：字段名固定为 duration/resolution/image/model/prompt
+        // Runnode 视频模板统一参数：字段名固定为 duration/resolution/image/model/prompt；能力表声明首尾帧时加 image2（尾帧）
         model: '{{model}}',
         prompt: '{{prompt}}',
         duration: '{{duration}}',
         resolution: '{{resolution}}',
         image: bodyRecord.image ?? legacyInputReference ?? '{{image}}',
+        ...(supportsFirstLastFrame ? { image2: bodyRecord.image2 ?? '{{image2}}' } : {}),
       },
     },
     response: {
@@ -440,6 +444,7 @@ function normalizeStoredModel(raw: unknown, index: number): CustomModel {
       {
         type: raw.type,
         modelId,
+        provider,
       },
       compatMediaTemplate,
     )

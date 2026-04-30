@@ -49,9 +49,13 @@ function scopedWorkerUtilLogger(job: Job<TaskJobData>, action: string) {
   })
 }
 
-function sanitizeForModelInvocationLog(value: unknown): unknown {
+/** Redacts secrets and truncates data URLs / base64 in worker audit logs. */
+export function sanitizeModelInvocationDetailsForLog(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return summarizePotentiallyBinaryStringForLog(value)
+  }
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeForModelInvocationLog(item))
+    return value.map((item) => sanitizeModelInvocationDetailsForLog(item))
   }
   if (!value || typeof value !== 'object') {
     return value
@@ -64,15 +68,46 @@ function sanitizeForModelInvocationLog(value: unknown): unknown {
       output[key] = '[REDACTED]'
       continue
     }
-    output[key] = sanitizeForModelInvocationLog(item)
+    output[key] = sanitizeModelInvocationDetailsForLog(item)
   }
   return output
+}
+
+function isLikelyBase64Payload(s: string): boolean {
+  const compact = s.replace(/\s+/g, '')
+  if (compact.length < 240) return false
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(compact)) return false
+  if (/^[0-9a-f]+$/i.test(compact)) return false
+  return /[+/]/.test(compact) || compact.includes('=') || /[a-z]/.test(compact)
+}
+
+function summarizePotentiallyBinaryStringForLog(value: string): unknown {
+  const trimmed = value.trim()
+  if (trimmed.startsWith('data:')) {
+    return summarizeMediaValueForLog(value)
+  }
+  if (isLikelyBase64Payload(trimmed)) {
+    return {
+      kind: 'base64',
+      length: trimmed.length,
+      preview: `${trimmed.slice(0, 48)}…`,
+    }
+  }
+  return value
 }
 
 function summarizeMediaValueForLog(value: string): Record<string, unknown> {
   const trimmed = value.trim()
   const isDataUrl = trimmed.startsWith('data:')
-  const preview = trimmed.slice(0, 120)
+  let preview: string
+  if (isDataUrl) {
+    const comma = trimmed.indexOf(',')
+    const head = comma >= 0 ? trimmed.slice(0, comma + 1) : `${trimmed.slice(0, 64)}…`
+    const b64Len = comma >= 0 ? trimmed.length - comma - 1 : 0
+    preview = comma >= 0 ? `${head}<${b64Len} base64 chars>` : head
+  } else {
+    preview = trimmed.length > 120 ? `${trimmed.slice(0, 120)}…` : trimmed
+  }
   return {
     isDataUrl,
     length: trimmed.length,
@@ -262,7 +297,7 @@ export async function resolveImageSourceFromGeneration(
   logger.info({
     audit: true,
     message: 'panel image model invocation params',
-    details: sanitizeForModelInvocationLog({
+    details: sanitizeModelInvocationDetailsForLog({
       modelId: params.modelId,
       prompt: params.prompt,
       requestOptions: finalGenerationOptions,
@@ -547,7 +582,7 @@ export async function resolveVideoSourceFromGeneration(
   logger.info({
     audit: true,
     message: 'panel video model invocation params',
-    details: sanitizeForModelInvocationLog({
+    details: sanitizeModelInvocationDetailsForLog({
       modelId: params.modelId,
       imageUrl: summarizeMediaValueForLog(params.imageUrl),
       requestOptions: finalVideoOptions,

@@ -210,7 +210,10 @@ function shouldNormalizeRunnodeVideoTemplate(model: Pick<StoredModel, 'type' | '
   )
 }
 
-function normalizeRunnodeVideoTemplate(model: Pick<StoredModel, 'type' | 'modelId'>, template: OpenAICompatMediaTemplate): OpenAICompatMediaTemplate {
+function normalizeRunnodeVideoTemplate(
+  model: Pick<StoredModel, 'type' | 'modelId' | 'provider'>,
+  template: OpenAICompatMediaTemplate,
+): OpenAICompatMediaTemplate {
   if (!shouldNormalizeRunnodeVideoTemplate(model, template)) return template
 
   const body = template.create.bodyTemplate
@@ -223,16 +226,24 @@ function normalizeRunnodeVideoTemplate(model: Pick<StoredModel, 'type' | 'modelI
   const intervalMs = template.polling?.intervalMs ?? 3000
   const timeoutMs = template.polling?.timeoutMs ?? 300000
 
+  const supportsFirstLastFrame =
+    findBuiltinCapabilities('video', model.provider, model.modelId)?.video?.firstlastframe === true
+
+  const bodyTemplate: Record<string, TemplateBodyValue> = {
+    ...restBody,
+    image: restBody.image ?? legacyInputReference ?? '{{image}}',
+  }
+  if (supportsFirstLastFrame && bodyTemplate.image2 === undefined) {
+    bodyTemplate.image2 = '{{image2}}'
+  }
+
   return {
     ...template,
     create: {
       ...template.create,
       contentType: 'application/json',
       multipartFileFields: undefined,
-      bodyTemplate: {
-        ...restBody,
-        image: restBody.image ?? legacyInputReference ?? '{{image}}',
-      },
+      bodyTemplate,
     },
     response: {
       ...template.response,

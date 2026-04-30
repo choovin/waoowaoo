@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { snapshotCapabilitySelectionsForNewProject } from '@/lib/config-service'
 import { prisma } from '@/lib/prisma'
 import { requireUserAuth, isErrorResponse } from '@/lib/api-auth'
 import { apiHandler, ApiError } from '@/lib/api-errors'
@@ -208,6 +209,10 @@ export const POST = apiHandler(async (request: NextRequest) => {
     where: { userId: session.user.id }
   })
 
+  const seededCapabilityOverrides = userPreference
+    ? snapshotCapabilitySelectionsForNewProject(userPreference.capabilityDefaults)
+    : null
+
   // 创建基础项目
   const project = await prisma.project.create({
     data: {
@@ -236,7 +241,8 @@ export const POST = apiHandler(async (request: NextRequest) => {
         videoRatio: userPreference.videoRatio,
         artStyle: isArtStyleValue(userPreference.artStyle) ? userPreference.artStyle : 'american-comic',
         ttsRate: userPreference.ttsRate
-      })
+      }),
+      ...(seededCapabilityOverrides ? { capabilityOverrides: seededCapabilityOverrides } : {}),
     }
   })
 
